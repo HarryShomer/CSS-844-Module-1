@@ -1,4 +1,6 @@
 import os
+import argparse
+import threading
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -6,6 +8,7 @@ import matplotlib.pyplot as plt
 from plantcv import plantcv as pcv
 
 import skimage
+from skimage import io
 from skimage.segmentation import slic
 from skimage.measure import regionprops
 
@@ -74,7 +77,7 @@ def img_color_analysis(img_name, img_lab, img_mask):
         2. Grading the image based on the most populous bin of pixels
     """
     # All color metrics for img are stored here
-    img_by_metrics = {"img": os.path.basename(img_name)}
+    img_by_metrics = {"img": img_name}
 
     masked_img_lab = pcv.apply_mask(img_lab, img_mask, 'black')
 
@@ -93,13 +96,18 @@ def img_color_analysis(img_name, img_lab, img_mask):
     blue_yellow_just_corn.sort()
     bval_series = pd.Series(blue_yellow_just_corn)
 
+    # NOTE: Calculated separately 
+    num_bins = 8
+    bin_range = [-14, 90]
+    bin_size = (bin_range[1] - bin_range[0]) // num_bins
+
     # Number of pixels split between 8 ranges specified based on value
-    bins = list(range(0, 144, 16))
+    bins = list(range(bin_range[0], bin_range[1] + bin_size, bin_size))
     bin_val = bval_series.value_counts(bins=bins, sort=False)
     bin_perc = (bin_val / len(blue_yellow_just_corn)) * 100
 
     for b, b_perc in zip(range(len(bins) - 1), bin_perc):
-        img_by_metrics[f'Bin {b}: {bins[b]}-{bins[b+1]}%'] = b_perc
+        img_by_metrics[f'Bin {b+1}: {bins[b]}-{bins[b+1]}%'] = b_perc
 
     # Index of the bin with the largest amount of pixels 
     # Creating a grade from 1 - 8 for an image. +1 since starts as index 0
@@ -108,14 +116,12 @@ def img_color_analysis(img_name, img_lab, img_mask):
     return img_by_metrics
 
 
-
-def main():
-    all_img_metrics = []
-
-
-    for file in tqdm(os.listdir(IMG_DIR), desc="Processing Images"):
-        # print(f"Processing Image {file}")
-        img = skimage.io.imread(os.path.join(IMG_DIR, file))
+def run_thread(imgs, all_img_metrics):
+    """
+    Run specific thread for processing groups of images
+    """
+    for file in tqdm(imgs, desc="Processing Images"):
+        img = io.imread(os.path.join(IMG_DIR, file))
 
         # Two variants: Lab version and RGB normalized (for segmentation)
         #  - Normalized RGB - For segmentation
@@ -125,11 +131,32 @@ def main():
 
         # Mask retrieved form segmentation
         _, center_mask = get_mask(img_norm)
+        # masked_img_lab = pcv.apply_mask(img_lab, center_mask, 'black')
 
         img_by_metrics = img_color_analysis(file, img_lab, center_mask)
         all_img_metrics.append(img_by_metrics)
 
+        # blue_yellow_channel = masked_img_lab[:, :, 2]
+        # by_min.append(np.min(blue_yellow_channel))
+        # by_max.append(np.max(blue_yellow_channel))
 
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--threads", help="Number of threads to run", type=int, default=1)
+    args = parser.parse_args()
+
+    all_img_metrics = []
+
+    all_imgs = os.listdir(IMG_DIR)
+    img_chunks = np.array_split(np.array(all_imgs), args.threads)
+    img_threads = [threading.Thread(target=run_thread, args=(c, all_img_metrics)) for c in img_chunks] 
+
+    for t in img_threads:
+        t.start()
+    for t in img_threads:
+        t.join()
+    
     pd.DataFrame(all_img_metrics).to_csv("imgs_summary.csv", index=False)
 
 
